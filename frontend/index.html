@@ -276,6 +276,8 @@ function closeModal(id){ $("#"+id).classList.remove("active"); }
 
 // Fetch wrapper
 async function api(path, options={}){
+  // normalize: prevent /api/api when callers pass '/api/...'
+  if(path.startsWith('/api')) path = path.replace(/^\/api\b/, '');
   const url = API_BASE + path; // single /api prefix
   debug("fetch "+url);
   const res = await fetch(url, {headers:{'Content-Type':'application/json'}, ...options});
