@@ -4,57 +4,39 @@ services:
   redis:
     image: redis:7-alpine
     container_name: pitstop-redis
-    command: redis-server --appendonly yes
-    restart: unless-stopped
-    networks: [pitstop-network]
     volumes:
       - pitstop_redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - pitstop-network
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: pitstop-backend:latest
     container_name: pitstop-backend
     environment:
-      REDIS_URL: redis://redis:6379
-      CORS_ORIGINS: "*"
-      SECRET_KEY: ${SECRET_KEY:-change-me}
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY:-change-me}
     depends_on:
-      redis:
-        condition: service_healthy
+      - redis
     restart: unless-stopped
-    networks: [pitstop-network]
-    expose:
-      - "8000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
+    networks:
+      - pitstop-network
 
   frontend:
     build:
       context: ./frontend
-    image: pitstop-frontend:latest
+      dockerfile: Dockerfile
     container_name: pitstop-frontend
     ports:
       - "3654:80"
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
     restart: unless-stopped
-    networks: [pitstop-network]
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
+    networks:
+      - pitstop-network
 
 volumes:
   pitstop_redis_data:

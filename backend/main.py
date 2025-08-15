@@ -7,7 +7,6 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, ValidationError
 import uuid
 import traceback
-import json
 
 app = FastAPI(title='PitStop API', version='1.0.0')
 
@@ -18,8 +17,6 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
-
-SECRET_KEY = os.getenv('SECRET_KEY', 'default-secret-key-change-me')
 
 def get_redis():
     try:
@@ -100,6 +97,16 @@ def health_check():
         'timestamp': get_current_timestamp()
     }
 
+# NEW: compatibility endpoint used by frontend through nginx (/api/health)
+@app.get('/api/health')
+def health_check_api():
+    r = get_redis()
+    return {
+        'status': 'healthy',
+        'redis_connected': r is not None,
+        'timestamp': get_current_timestamp()
+    }
+
 @app.get('/api/dashboard/stats')
 def get_stats():
     r = get_redis()
@@ -111,7 +118,7 @@ def get_stats():
             'total_registration_records': 0,
             'redis_status': 'disconnected'
         }
-    
+
     try:
         total_vehicles = len(r.keys('vehicle:*'))
         total_maintenance = len(r.keys('maintenance:*'))
@@ -140,7 +147,7 @@ def get_vehicles():
     r = get_redis()
     if not r:
         return []
-    
+
     try:
         vehicle_keys = r.keys('vehicle:*')
         vehicles = []
@@ -162,17 +169,17 @@ def get_vehicle(vehicle_id: str):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
         vehicle_data = r.hgetall(f'vehicle:{vehicle_id}')
         if not vehicle_data:
             raise HTTPException(status_code=404, detail='Vehicle not found')
-        
+
         if 'year' in vehicle_data:
             vehicle_data['year'] = int(vehicle_data['year'])
         if 'mileage' in vehicle_data:
             vehicle_data['mileage'] = int(vehicle_data['mileage'])
-        
+
         return Vehicle(**vehicle_data)
     except HTTPException:
         raise
@@ -185,21 +192,19 @@ def create_vehicle(vehicle: Vehicle):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
-        print(f'Creating vehicle: {vehicle}')
         vehicle_id = str(uuid.uuid4())
         vehicle.id = vehicle_id
         vehicle.created_at = get_current_timestamp()
         vehicle.updated_at = get_current_timestamp()
-        
+
         vehicle_dict = vehicle.dict()
         for key, value in vehicle_dict.items():
             if value is not None:
                 vehicle_dict[key] = str(value)
-        
+
         r.hset(f'vehicle:{vehicle_id}', mapping=vehicle_dict)
-        print(f'Created vehicle: {vehicle_id}')
         return vehicle
     except Exception as e:
         print(f'Create vehicle error: {e}')
@@ -211,21 +216,21 @@ def update_vehicle(vehicle_id: str, vehicle: Vehicle):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
         existing = r.hgetall(f'vehicle:{vehicle_id}')
         if not existing:
             raise HTTPException(status_code=404, detail='Vehicle not found')
-        
+
         vehicle.id = vehicle_id
         vehicle.created_at = existing.get('created_at')
         vehicle.updated_at = get_current_timestamp()
-        
+
         vehicle_dict = vehicle.dict()
         for key, value in vehicle_dict.items():
             if value is not None:
                 vehicle_dict[key] = str(value)
-        
+
         r.hset(f'vehicle:{vehicle_id}', mapping=vehicle_dict)
         return vehicle
     except HTTPException:
@@ -239,20 +244,19 @@ def delete_vehicle(vehicle_id: str):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
         if not r.exists(f'vehicle:{vehicle_id}'):
             raise HTTPException(status_code=404, detail='Vehicle not found')
-        
+
         maintenance_keys = r.keys(f'maintenance:{vehicle_id}:*')
         insurance_keys = r.keys(f'insurance:{vehicle_id}:*')
         registration_keys = r.keys(f'registration:{vehicle_id}:*')
-        
-        for key in maintenance_keys + insurance_keys + registration_keys:
+
+        for key in list(maintenance_keys) + list(insurance_keys) + list(registration_keys):
             r.delete(key)
-        
+
         r.delete(f'vehicle:{vehicle_id}')
-        print(f'Deleted vehicle: {vehicle_id}')
         return {'message': 'Vehicle deleted successfully'}
     except HTTPException:
         raise
@@ -266,18 +270,18 @@ def get_maintenance_records(vehicle_id: str):
     r = get_redis()
     if not r:
         return []
-    
+
     try:
         maintenance_keys = r.keys(f'maintenance:{vehicle_id}:*')
         records = []
         for key in maintenance_keys:
             record_data = r.hgetall(key)
             if record_data:
-                if 'mileage' in record_data and record_data['mileage']:
+                if record_data.get('mileage'):
                     record_data['mileage'] = int(record_data['mileage'])
-                if 'cost' in record_data and record_data['cost']:
+                if record_data.get('cost'):
                     record_data['cost'] = float(record_data['cost'])
-                if 'next_due_mileage' in record_data and record_data['next_due_mileage']:
+                if record_data.get('next_due_mileage'):
                     record_data['next_due_mileage'] = int(record_data['next_due_mileage'])
                 records.append(MaintenanceRecord(**record_data))
         return sorted(records, key=lambda x: x.date, reverse=True)
@@ -290,21 +294,20 @@ def get_maintenance_record(maintenance_id: str):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
         all_maintenance_keys = r.keys('maintenance:*')
         for key in all_maintenance_keys:
             if key.endswith(f':{maintenance_id}'):
                 record_data = r.hgetall(key)
                 if record_data:
-                    if 'mileage' in record_data and record_data['mileage']:
+                    if record_data.get('mileage'):
                         record_data['mileage'] = int(record_data['mileage'])
-                    if 'cost' in record_data and record_data['cost']:
+                    if record_data.get('cost'):
                         record_data['cost'] = float(record_data['cost'])
-                    if 'next_due_mileage' in record_data and record_data['next_due_mileage']:
+                    if record_data.get('next_due_mileage'):
                         record_data['next_due_mileage'] = int(record_data['next_due_mileage'])
                     return record_data
-        
         raise HTTPException(status_code=404, detail='Maintenance record not found')
     except HTTPException:
         raise
@@ -313,41 +316,36 @@ def get_maintenance_record(maintenance_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post('/api/vehicles/{vehicle_id}/maintenance')
-def create_maintenance_record(vehicle_id: str, request: Request, data: Dict[str, Any]):
+def create_maintenance_record(vehicle_id: str, data: Dict[str, Any]):
     r = get_redis()
     if not r:
-        print('Redis not available')
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
-        print(f'=== MAINTENANCE RECORD CREATION ===')
-        print(f'Vehicle ID: {vehicle_id}')
-        print(f'Raw request data: {data}')
-        
         if not r.exists(f'vehicle:{vehicle_id}'):
-            print(f'Vehicle {vehicle_id} not found in Redis')
             raise HTTPException(status_code=404, detail='Vehicle not found')
-        
-        clean_data = {}
-        clean_data['vehicle_id'] = vehicle_id
-        clean_data['type'] = data.get('type', '')
-        clean_data['description'] = data.get('description', '')
-        clean_data['date'] = data.get('date', '')
-        clean_data['service_provider'] = data.get('service_provider', '')
-        
+
+        clean_data = {
+            'vehicle_id': vehicle_id,
+            'type': data.get('type', ''),
+            'description': data.get('description', ''),
+            'date': data.get('date', ''),
+            'service_provider': data.get('service_provider', '')
+        }
+
         try:
             clean_data['mileage'] = int(data.get('mileage', 0))
         except (ValueError, TypeError):
             raise HTTPException(status_code=422, detail='Invalid mileage value')
-        
+
         try:
             clean_data['cost'] = float(data.get('cost', 0.0))
         except (ValueError, TypeError):
             raise HTTPException(status_code=422, detail='Invalid cost value')
-        
-        clean_data['notes'] = data.get('notes', '') if data.get('notes') else None
-        clean_data['next_due_date'] = data.get('next_due_date', '') if data.get('next_due_date') else None
-        
+
+        clean_data['notes'] = data.get('notes') or None
+        clean_data['next_due_date'] = data.get('next_due_date') or None
+
         if data.get('next_due_mileage'):
             try:
                 clean_data['next_due_mileage'] = int(data.get('next_due_mileage'))
@@ -355,48 +353,24 @@ def create_maintenance_record(vehicle_id: str, request: Request, data: Dict[str,
                 clean_data['next_due_mileage'] = None
         else:
             clean_data['next_due_mileage'] = None
-        
-        print(f'Cleaned data: {clean_data}')
-        
-        try:
-            record = MaintenanceRecord(**clean_data)
-            print(f'Pydantic validation successful: {record}')
-        except ValidationError as ve:
-            print(f'Pydantic validation failed: {ve}')
-            raise HTTPException(status_code=422, detail=f'Validation error: {ve}')
-        
+
+        record = MaintenanceRecord(**clean_data)
+
         record_id = str(uuid.uuid4())
         record.id = record_id
         record.vehicle_id = vehicle_id
         record.created_at = get_current_timestamp()
         record.updated_at = get_current_timestamp()
-        
+
         record_dict = record.dict()
-        print(f'Record dict for Redis: {record_dict}')
-        
-        redis_data = {}
-        for key, value in record_dict.items():
-            if value is not None:
-                redis_data[key] = str(value)
-            else:
-                redis_data[key] = ''
-        
-        print(f'Redis storage data: {redis_data}')
-        
-        result = r.hset(f'maintenance:{vehicle_id}:{record_id}', mapping=redis_data)
-        print(f'Redis hset result: {result}')
-        
-        saved_record = r.hgetall(f'maintenance:{vehicle_id}:{record_id}')
-        print(f'Verified saved record: {saved_record}')
-        
-        print(f'✅ Successfully created maintenance record: {record_id} for vehicle: {vehicle_id}')
-        
+        redis_data = {k: ('' if v is None else str(v)) for k, v in record_dict.items()}
+        r.hset(f'maintenance:{vehicle_id}:{record_id}', mapping=redis_data)
+
         return record.dict()
-        
     except HTTPException:
         raise
     except Exception as e:
-        print(f'❌ Create maintenance error: {e}')
+        print(f'Create maintenance error: {e}')
         print(f'Traceback: {traceback.format_exc()}')
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -404,49 +378,40 @@ def create_maintenance_record(vehicle_id: str, request: Request, data: Dict[str,
 def update_maintenance_record(maintenance_id: str, data: Dict[str, Any]):
     r = get_redis()
     if not r:
-        print('Redis not available')
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
-        print(f'=== MAINTENANCE RECORD UPDATE ===')
-        print(f'Maintenance ID: {maintenance_id}')
-        print(f'Raw request data: {data}')
-        
         maintenance_key = None
         all_maintenance_keys = r.keys('maintenance:*')
         for key in all_maintenance_keys:
             if key.endswith(f':{maintenance_id}'):
                 maintenance_key = key
                 break
-        
         if not maintenance_key:
-            print(f'Maintenance record {maintenance_id} not found')
             raise HTTPException(status_code=404, detail='Maintenance record not found')
-        
+
         existing_data = r.hgetall(maintenance_key)
         if not existing_data:
             raise HTTPException(status_code=404, detail='Maintenance record not found')
-        
-        clean_data = {}
-        clean_data['vehicle_id'] = existing_data.get('vehicle_id', '')
-        clean_data['type'] = data.get('type', existing_data.get('type', ''))
-        clean_data['description'] = data.get('description', existing_data.get('description', ''))
-        clean_data['date'] = data.get('date', existing_data.get('date', ''))
-        clean_data['service_provider'] = data.get('service_provider', existing_data.get('service_provider', ''))
-        
+
+        clean_data = {
+            'vehicle_id': existing_data.get('vehicle_id', ''),
+            'type': data.get('type', existing_data.get('type', '')),
+            'description': data.get('description', existing_data.get('description', '')),
+            'date': data.get('date', existing_data.get('date', '')),
+            'service_provider': data.get('service_provider', existing_data.get('service_provider', '')),
+        }
         try:
             clean_data['mileage'] = int(data.get('mileage', existing_data.get('mileage', 0)))
         except (ValueError, TypeError):
             raise HTTPException(status_code=422, detail='Invalid mileage value')
-        
         try:
             clean_data['cost'] = float(data.get('cost', existing_data.get('cost', 0.0)))
         except (ValueError, TypeError):
             raise HTTPException(status_code=422, detail='Invalid cost value')
-        
-        clean_data['notes'] = data.get('notes', '') if data.get('notes') else None
-        clean_data['next_due_date'] = data.get('next_due_date', '') if data.get('next_due_date') else None
-        
+
+        clean_data['notes'] = data.get('notes') or None
+        clean_data['next_due_date'] = data.get('next_due_date') or None
         if data.get('next_due_mileage'):
             try:
                 clean_data['next_due_mileage'] = int(data.get('next_due_mileage'))
@@ -454,43 +419,21 @@ def update_maintenance_record(maintenance_id: str, data: Dict[str, Any]):
                 clean_data['next_due_mileage'] = None
         else:
             clean_data['next_due_mileage'] = None
-        
-        print(f'Cleaned data: {clean_data}')
-        
-        try:
-            record = MaintenanceRecord(**clean_data)
-            print(f'Pydantic validation successful: {record}')
-        except ValidationError as ve:
-            print(f'Pydantic validation failed: {ve}')
-            raise HTTPException(status_code=422, detail=f'Validation error: {ve}')
-        
+
+        record = MaintenanceRecord(**clean_data)
         record.id = maintenance_id
         record.created_at = existing_data.get('created_at')
         record.updated_at = get_current_timestamp()
-        
+
         record_dict = record.dict()
-        print(f'Record dict for Redis: {record_dict}')
-        
-        redis_data = {}
-        for key, value in record_dict.items():
-            if value is not None:
-                redis_data[key] = str(value)
-            else:
-                redis_data[key] = ''
-        
-        print(f'Redis storage data: {redis_data}')
-        
-        result = r.hset(maintenance_key, mapping=redis_data)
-        print(f'Redis hset result: {result}')
-        
-        print(f'✅ Successfully updated maintenance record: {maintenance_id}')
-        
+        redis_data = {k: ('' if v is None else str(v)) for k, v in record_dict.items()}
+        r.hset(maintenance_key, mapping=redis_data)
+
         return record.dict()
-        
     except HTTPException:
         raise
     except Exception as e:
-        print(f'❌ Update maintenance error: {e}')
+        print(f'Update maintenance error: {e}')
         print(f'Traceback: {traceback.format_exc()}')
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -499,33 +442,24 @@ def delete_maintenance_record(maintenance_id: str):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
-        print(f'=== MAINTENANCE RECORD DELETION ===')
-        print(f'Maintenance ID: {maintenance_id}')
-        
         maintenance_key = None
         all_maintenance_keys = r.keys('maintenance:*')
         for key in all_maintenance_keys:
             if key.endswith(f':{maintenance_id}'):
                 maintenance_key = key
                 break
-        
+
         if not maintenance_key:
-            print(f'Maintenance record {maintenance_id} not found')
             raise HTTPException(status_code=404, detail='Maintenance record not found')
-        
-        result = r.delete(maintenance_key)
-        print(f'Redis delete result: {result}')
-        
-        print(f'✅ Successfully deleted maintenance record: {maintenance_id}')
-        
+
+        r.delete(maintenance_key)
         return {'message': 'Maintenance record deleted successfully'}
-        
     except HTTPException:
         raise
     except Exception as e:
-        print(f'❌ Delete maintenance error: {e}')
+        print(f'Delete maintenance error: {e}')
         print(f'Traceback: {traceback.format_exc()}')
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -535,16 +469,16 @@ def get_insurance_records(vehicle_id: str):
     r = get_redis()
     if not r:
         return []
-    
+
     try:
         insurance_keys = r.keys(f'insurance:{vehicle_id}:*')
         records = []
         for key in insurance_keys:
             record_data = r.hgetall(key)
             if record_data:
-                if 'premium' in record_data and record_data['premium']:
+                if record_data.get('premium'):
                     record_data['premium'] = float(record_data['premium'])
-                if 'deductible' in record_data and record_data['deductible']:
+                if record_data.get('deductible'):
                     record_data['deductible'] = float(record_data['deductible'])
                 records.append(Insurance(**record_data))
         return sorted(records, key=lambda x: x.start_date, reverse=True)
@@ -557,23 +491,20 @@ def create_insurance_record(vehicle_id: str, record: Insurance):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
         if not r.exists(f'vehicle:{vehicle_id}'):
             raise HTTPException(status_code=404, detail='Vehicle not found')
-        
+
         record_id = str(uuid.uuid4())
         record.id = record_id
         record.vehicle_id = vehicle_id
         record.created_at = get_current_timestamp()
-        
+
         record_dict = record.dict()
         for key, value in record_dict.items():
-            if value is not None:
-                record_dict[key] = str(value)
-            else:
-                record_dict[key] = ''
-        
+            record_dict[key] = '' if value is None else str(value)
+
         r.hset(f'insurance:{vehicle_id}:{record_id}', mapping=record_dict)
         return record
     except HTTPException:
@@ -588,14 +519,14 @@ def get_registration_records(vehicle_id: str):
     r = get_redis()
     if not r:
         return []
-    
+
     try:
         registration_keys = r.keys(f'registration:{vehicle_id}:*')
         records = []
         for key in registration_keys:
             record_data = r.hgetall(key)
             if record_data:
-                if 'fee' in record_data and record_data['fee']:
+                if record_data.get('fee'):
                     record_data['fee'] = float(record_data['fee'])
                 records.append(Registration(**record_data))
         return sorted(records, key=lambda x: x.issue_date, reverse=True)
@@ -608,23 +539,20 @@ def create_registration_record(vehicle_id: str, record: Registration):
     r = get_redis()
     if not r:
         raise HTTPException(status_code=503, detail='Database unavailable')
-    
+
     try:
         if not r.exists(f'vehicle:{vehicle_id}'):
             raise HTTPException(status_code=404, detail='Vehicle not found')
-        
+
         record_id = str(uuid.uuid4())
         record.id = record_id
         record.vehicle_id = vehicle_id
         record.created_at = get_current_timestamp()
-        
+
         record_dict = record.dict()
         for key, value in record_dict.items():
-            if value is not None:
-                record_dict[key] = str(value)
-            else:
-                record_dict[key] = ''
-        
+            record_dict[key] = '' if value is None else str(value)
+
         r.hset(f'registration:{vehicle_id}:{record_id}', mapping=record_dict)
         return record
     except HTTPException:
