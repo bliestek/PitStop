@@ -8,8 +8,7 @@ services:
       - pitstop_redis_data:/data
     command: redis-server --appendonly yes
     restart: unless-stopped
-    networks:
-      - pitstop-network
+    networks: [pitstop-network]
 
   backend:
     build:
@@ -19,11 +18,9 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - SECRET_KEY=${SECRET_KEY:-change-me}
-    depends_on:
-      - redis
+    depends_on: [redis]
     restart: unless-stopped
-    networks:
-      - pitstop-network
+    networks: [pitstop-network]
 
   frontend:
     build:
@@ -31,11 +28,9 @@ services:
     container_name: pitstop-frontend
     ports:
       - "3654:80"
-    depends_on:
-      - backend
+    depends_on: [backend]
     restart: unless-stopped
-    networks:
-      - pitstop-network
+    networks: [pitstop-network]
 
 volumes:
   pitstop_redis_data:
